@@ -1,0 +1,14 @@
+CFLAGS=-c -Wall -O2
+LIBS = -lm -pthread
+
+all: oledplay
+
+oledplay: play.o
+	$(CC) play.o $(LIBS) -g -o oledplay
+
+play.o: play.c
+	$(CC) $(CFLAGS) play.c
+
+clean:
+	rm *.o oledplay
+
