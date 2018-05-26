@@ -19,6 +19,7 @@ static char szOut[MAX_PATH];
 static int iTop = -1;
 static int iLeft = -1;
 static int bC = 0; // write C code instead of binary data to output file
+static int bInvert = 0; // invert the bitmap colors
 //#define DEBUG_LOG
 //#define SAVE_INPUT_FRAMES
 //#define SAVE_OUTPUT_FRAMES
@@ -36,6 +37,7 @@ void ShowHelp(void)
         " --in <infile>       Input file\n"
 	" --out <outfile>     Output file\n"
 	" --c                 Write C code to output file\n"
+	" --invert            Invert bitmap colors\n"
 	" --top N             Top of cropped area\n"
 	" --left N            Left of cropped area\n"
     );
@@ -74,6 +76,9 @@ int i = 1;
             i += 2;
         } else if (0 == strcmp("--c", argv[i])) {
             bC = 1;
+            i++;
+	} else if (0 == strcmp("--invert", argv[i])) {
+            bInvert = 1;
             i++;
 	}  else {
             fprintf(stderr, "Unknown parameter '%s'\n", argv[i]);
@@ -545,6 +550,14 @@ unsigned char ucMask;
          } // for x
       } // for y
    } // 16-bpp
+// Invert if requested
+   if (bInvert)
+   {
+     for (x=0; x<1024; x++)
+     {
+        pFrame[x] = ~pFrame[x];
+     }
+   }
 } /* Make1Bit() */
 //
 // Compress the current frame against the previous
