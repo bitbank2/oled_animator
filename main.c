@@ -24,6 +24,14 @@ static int bInvert = 0; // invert the bitmap colors
 //#define SAVE_INPUT_FRAMES
 //#define SAVE_OUTPUT_FRAMES
 //
+// Byte operands for compressing the data
+// The first 2 bits are the type, followed by the counts
+#define OP_MASK 0xc0
+#define OP_SKIPCOPY 0x00
+#define OP_COPYSKIP 0x40
+#define OP_REPEATSKIP 0x80
+#define OP_REPEAT 0xc0
+//
 // ShowHelp
 //
 // Display the help info when incorrect or no command line parameters are passed
@@ -105,6 +113,37 @@ unsigned char ucMask = 0x80 >> (x & 7);
 return b;
 } /* GetByte() */
 //
+// For debugging
+//
+void DumpHex(unsigned char *s, int iLen)
+{
+int i;
+	for (i=0; i<iLen; i++)
+	{
+		printf("0x%02x,", s[i]);
+	}
+	printf("\n");
+} /* DumpHex() */
+//
+// See if there are repeating bytes in a 1-7 byte sequence
+// returns true if bytes are all equal
+//
+int CheckShortRepeat(unsigned char *s, int iLen)
+{
+unsigned char ucPattern;
+int i;
+
+   if (iLen < 2)
+      return 0;
+   ucPattern = s[0];
+   for (i=1; i<iLen; i++)
+   {
+      if (s[i] != ucPattern)
+         return 0; // nope
+   }
+   return 1; // yes, all bytes are equal
+} /* CheckShortRepeat() */
+//
 // Find repeats in a length of "different" bytes
 //
 int TryRepeat(int *iDiffCount, unsigned char *pTemp, unsigned char *pDest, int *iLen)
@@ -143,7 +182,7 @@ printf("Entering TryRepeat(), iDiffCount = %d\n", *iDiffCount);
 #ifdef DEBUG_LOG
 printf("big copy 256\n");
 #endif
-                        pDest[i++] = 0x40; // big copy
+                        pDest[i++] = OP_COPYSKIP; // big copy
                         pDest[i++] = 0xff; // max length 256
                         memcpy(&pDest[i], &pTemp[iStart], 256);
                         i += 256;
@@ -153,9 +192,10 @@ printf("big copy 256\n");
                     if (j > 7)
                     {
 #ifdef DEBUG_LOG
-printf("big copy %d\n", j);
+printf("big copy %d,", j);
+DumpHex(&pTemp[iStart], j);
 #endif
-                        pDest[i++] = 0x40;
+                        pDest[i++] = OP_COPYSKIP;
                         pDest[i++] = (unsigned char)(j - 1);
                         memcpy(&pDest[i], &pTemp[iStart], j);
                         i += j;
@@ -166,31 +206,40 @@ printf("big copy %d\n", j);
                  if (j > 0 && j <= 7) // short diff
                  {
 #ifdef DEBUG_LOG
-printf("short copy %d\n", j);
+printf("short copy %d,", j);
+DumpHex(&pTemp[iStart], j);
 #endif
-                     pDest[i++] = 0x40 + (j<<3);
-                     memcpy(&pDest[i], &pTemp[iStart], j);
-                     i += j;
+                     if (CheckShortRepeat(&pTemp[iStart], j))
+                     {
+                        pDest[i++] = OP_REPEAT + (j-1);
+                        pDest[i++] = pTemp[iStart];
+                     }
+                     else
+                     {
+                        pDest[i++] = OP_COPYSKIP + (j<<3);
+                        memcpy(&pDest[i], &pTemp[iStart], j);
+                        i += j;
+                     }
                      iStart += j;
                  }
              }
              // now encode the repeat
-             while (iRepeat >= 128)
+             while (iRepeat >= 64)
              {
 #ifdef DEBUG_LOG
-printf("repeat 128, 0x%02x\n", ucMatch);
+printf("repeat 64, 0x%02x\n", ucMatch);
 #endif
-                 pDest[i++] = 0xff; // repeat of 128
+                 pDest[i++] = OP_REPEAT | 0x3f; // 64
                  pDest[i++] = ucMatch;
-                 iRepeat -= 128;
-                 iStart += 128;
+                 iRepeat -= 64;
+                 iStart += 64;
              }
-             if (iRepeat)
+             if (iRepeat) // last repeat
              {
 #ifdef DEBUG_LOG
 printf("repeat %d, 0x%02x\n", iRepeat, ucMatch);
 #endif
-                 pDest[i++] = 0x80 + (iRepeat - 1);
+                 pDest[i++] = OP_REPEAT | (unsigned char)(iRepeat-1);
                  pDest[i++] = ucMatch;
                  iStart += iRepeat;
              }
@@ -212,7 +261,7 @@ printf("repeat %d, 0x%02x\n", iRepeat, ucMatch);
 #ifdef DEBUG_LOG
 printf("big copy 256\n");
 #endif
-                        pDest[i++] = 0x40; // big copy
+                        pDest[i++] = OP_COPYSKIP; // big copy
                         pDest[i++] =0xff; // max length 256
                         memcpy(&pDest[i], &pTemp[iStart], 256);
                         i += 256;
@@ -222,9 +271,10 @@ printf("big copy 256\n");
                     if (j > 7)
                     {
 #ifdef DEBUG_LOG
-printf("big copy %d\n", j);
+printf("big copy %d", j);
+DumpHex(&pTemp[iStart], j);
 #endif
-                        pDest[i++] = 0x40;
+                        pDest[i++] = OP_COPYSKIP;
                         pDest[i++] = (unsigned char)(j - 1);
                         memcpy(&pDest[i], &pTemp[iStart], j);
 			i += j;
@@ -235,31 +285,40 @@ printf("big copy %d\n", j);
                  if (j > 0 && j <= 7) // short diff
                  {
 #ifdef DEBUG_LOG
-printf("short copy %d\n", j);
+printf("short copy %d,", j);
+DumpHex(&pTemp[iStart], j);
 #endif
-                     pDest[i++] = 0x40 + (j<<3);
-                     memcpy(&pDest[i], &pTemp[iStart], j);
-                     i += j;
+                     if (CheckShortRepeat(&pTemp[iStart], j))
+                     {
+                        pDest[i++] = OP_REPEAT + (j-1);
+                        pDest[i++] = pTemp[iStart];
+                     }
+                     else
+                     {
+                        pDest[i++] = OP_COPYSKIP + (j<<3);
+                        memcpy(&pDest[i], &pTemp[iStart], j);
+                        i += j;
+                     }
                      iStart += j;
                  }
              }
              // now encode the repeat
-             while (iRepeat >= 128)
+             while (iRepeat >= 64)
              {
 #ifdef DEBUG_LOG
-printf("repeat 128, 0x%02x\n", ucMatch);
+printf("repeat 64, 0x%02x\n", ucMatch);
 #endif
-                 pDest[i++] = 0xff; // repeat of 128
+                 pDest[i++] = OP_REPEAT | 0x3f; // 64
                  pDest[i++] = ucMatch;
-                 iRepeat -= 128;
-                 iStart += 128;
+                 iRepeat -= 64;
+                 iStart += 64;
              }
              if (iRepeat)
              {
 #ifdef DEBUG_LOG
 printf("repeat %d, 0x%02x\n", iRepeat, ucMatch);
 #endif
-                 pDest[i++] = 0x80 + (iRepeat - 1);
+                 pDest[i++] = OP_REPEAT | (iRepeat-1); // big repeat
                  pDest[i++] = ucMatch;
                  iStart += iRepeat;
              }
@@ -315,11 +374,22 @@ printf("BigSkip %d\n", *iSkipCount);
       if (*iSkipCount <= 7 && *iDiffCount > 0 && *iDiffCount <= 7) // 2 short
       { // skip/copy (both short)
 #ifdef DEBUG_LOG
-printf("skip/copy %d,%d\n", *iSkipCount, *iDiffCount);
+printf("skip+copy %d,%d,", *iSkipCount, *iDiffCount);
+DumpHex(pTemp, *iDiffCount);
 #endif
-         pDest[i++] = (unsigned char)((*iSkipCount << 3) | (*iDiffCount));
-         memcpy(&pDest[i], pTemp, *iDiffCount);
-         i += *iDiffCount;
+         if (CheckShortRepeat(pTemp, *iDiffCount))
+         {
+            if (*iSkipCount)
+               pDest[i++] = OP_SKIPCOPY | (unsigned char)(*iSkipCount << 3);
+            pDest[i++] = OP_REPEAT | (*iDiffCount-1); // repeat
+            pDest[i++] = pTemp[0];
+         }
+         else
+         {
+            pDest[i++] = OP_SKIPCOPY | (unsigned char)((*iSkipCount << 3) | (*iDiffCount));
+            memcpy(&pDest[i], pTemp, *iDiffCount);
+            i += *iDiffCount;
+         }
          *iSkipCount = *iDiffCount = 0; // all handled
          *iLen = i;
          return;
@@ -329,9 +399,9 @@ printf("skip/copy %d,%d\n", *iSkipCount, *iDiffCount);
          if (*iSkipCount != 0) // store just the skip by itself
          {
 #ifdef DEBUG_LOG
-printf( "skip/copy %d,0\n", *iSkipCount);
+printf( "skip+copy %d,0\n", *iSkipCount);
 #endif
-            pDest[i++] = (unsigned char)(*iSkipCount << 3);
+            pDest[i++] = OP_SKIPCOPY | (unsigned char)(*iSkipCount << 3);
             *iSkipCount = 0;
          }
          pTemp += TryRepeat(iDiffCount, pTemp, pDest, &i);
@@ -340,7 +410,7 @@ printf( "skip/copy %d,0\n", *iSkipCount);
 #ifdef DEBUG_LOG
 printf("big copy 256\n");
 #endif
-            pDest[i++] = 0x40; // big copy
+            pDest[i++] = OP_COPYSKIP; // big copy
             pDest[i++] = 0xff; // max length = 256
             memcpy(&pDest[i], pTemp, 256);
             i += 256; pTemp += 256;
@@ -349,19 +419,32 @@ printf("big copy 256\n");
          if (*iDiffCount > 7) // wrap up the rest as a long diff
          {
 #ifdef DEBUG_LOG
-printf("big copy %d\n", *iDiffCount);
+printf("big copy %d,", *iDiffCount);
+DumpHex(pTemp, *iDiffCount);
 #endif 
-            pDest[i++] = 0x40; // long copy
-            pDest[i++] = (unsigned char)(*iDiffCount -1);
+            pDest[i++] = OP_COPYSKIP; // long copy
+            pDest[i++] = (unsigned char)(*iDiffCount-1);
             memcpy(&pDest[i], pTemp, *iDiffCount);
             i += *iDiffCount;
             *iDiffCount = 0;
          }
          if (*iDiffCount > 0)
          {
-            pDest[i++] = 0x40 | (*iDiffCount << 3); // short copy
-            memcpy(&pDest[i], pTemp, *iDiffCount);
-            i += *iDiffCount;
+#ifdef DEBUG_LOG
+printf("short copy %d,", *iDiffCount);
+DumpHex(pTemp, *iDiffCount);
+#endif
+            if (CheckShortRepeat(pTemp, *iDiffCount))
+            {
+               pDest[i++] = OP_REPEAT + (*iDiffCount-1);
+               pDest[i++] = pTemp[0];
+            }
+            else
+            {
+               pDest[i++] = OP_COPYSKIP | (*iDiffCount << 3); // short copy
+               memcpy(&pDest[i], pTemp, *iDiffCount);
+               i += *iDiffCount;
+            }
             *iDiffCount = 0;
          }
          *iLen = i; // return new length
@@ -372,7 +455,7 @@ printf("big copy %d\n", *iDiffCount);
 #ifdef DEBUG_LOG
 printf("final skip %d\n", *iSkipCount);
 #endif
-         pDest[i++] = *iSkipCount << 3;
+         pDest[i++] = OP_SKIPCOPY | (unsigned char)(*iSkipCount << 3);
          *iLen = i;
          return;
       }
@@ -383,7 +466,7 @@ printf("final skip %d\n", *iSkipCount);
 #ifdef DEBUG_LOG
 printf("big copy final 256\n");
 #endif
-            pDest[i++] = 0x40; // big copy
+            pDest[i++] = OP_COPYSKIP; // big copy
             pDest[i++] = 0xff; // max length = 256
             memcpy(&pDest[i], pTemp, 256);
             i += 256; pTemp += 256;
@@ -392,9 +475,10 @@ printf("big copy final 256\n");
          if (*iDiffCount > 7) // wrap up the rest as a long diff
          {
 #ifdef DEBUG_LOG
-printf("big copy final %d\n", *iDiffCount);
+printf("big copy final %d,", *iDiffCount);
+DumpHex(pTemp, *iDiffCount);
 #endif
-            pDest[i++] = 0x40; // long copy
+            pDest[i++] = OP_COPYSKIP; // long copy
             pDest[i++] = (unsigned char)(*iDiffCount -1);
             memcpy(&pDest[i], pTemp, *iDiffCount);
             i += *iDiffCount;
@@ -402,9 +486,21 @@ printf("big copy final %d\n", *iDiffCount);
          }
          if (*iDiffCount > 0)
          {
-            pDest[i++] = 0x40 | (*iDiffCount << 3); // short copy
-            memcpy(&pDest[i], pTemp, *iDiffCount);
-            i += *iDiffCount;
+#ifdef DEBUG_LOG
+printf("short copy %d,", *iDiffCount);
+DumpHex(pTemp, *iDiffCount);
+#endif
+            if (CheckShortRepeat(pTemp, *iDiffCount))
+            {
+               pDest[i++] = OP_REPEAT | (*iDiffCount-1);
+               pDest[i++] = pTemp[0];
+            }
+            else
+            {
+               pDest[i++] = OP_COPYSKIP | (*iDiffCount << 3); // short copy
+               memcpy(&pDest[i], pTemp, *iDiffCount);
+               i += *iDiffCount;
+            }
             *iDiffCount = 0;
          }
       }
@@ -422,7 +518,7 @@ printf("big copy final %d\n", *iDiffCount);
 #ifdef DEBUG_LOG
 printf("big copy 256\n");
 #endif
-            pDest[i++] = 0x40; // long copy
+            pDest[i++] = OP_COPYSKIP; // long copy
             pDest[i++] = 0xff; // max count = 256
             memcpy(&pDest[i], pTemp, 256);
             i += 256; pTemp += 256;
@@ -431,9 +527,10 @@ printf("big copy 256\n");
          if (*iDiffCount > 7) // last long count
          {
 #ifdef DEBUG_LOG
-printf("big copy %d\n", *iDiffCount);
+printf("big copy %d,", *iDiffCount);
+DumpHex(pTemp, *iDiffCount);
 #endif
-            pDest[i++] = 0x40;
+            pDest[i++] = OP_COPYSKIP;
             pDest[i++] = (unsigned char)(*iDiffCount - 1);
             memcpy(&pDest[i], pTemp, *iDiffCount);
             pTemp += *iDiffCount;
@@ -446,30 +543,50 @@ printf("big copy %d\n", *iDiffCount);
          if (*iSkipCount <= 7) // small small
          {
 #ifdef DEBUG_LOG
-printf("copy/skip %d,%d\n", *iDiffCount, *iSkipCount);
+printf("copy+skip %d,%d,", *iDiffCount, *iSkipCount);
+DumpHex(pTemp, *iDiffCount);
 #endif
-            pDest[i++] = 0x40 | (unsigned char)((*iDiffCount << 3) | *iSkipCount);
-            memcpy(&pDest[i], pTemp, *iDiffCount);
-            pTemp += *iDiffCount;
-            i += *iDiffCount;
-            *iDiffCount = *iSkipCount = 0;
+            if (CheckShortRepeat(pTemp, *iDiffCount))
+            {
+               pDest[i++] = OP_REPEATSKIP | (unsigned char)((*iDiffCount << 3) + (*iSkipCount));
+               pDest[i++] = pTemp[0];
+               pTemp += *iDiffCount;
+               *iDiffCount = *iSkipCount = 0;
+            }
+            if (*iDiffCount || *iSkipCount) // may not have any
+            {
+               pDest[i++] = OP_COPYSKIP | (unsigned char)((*iDiffCount << 3) | *iSkipCount);
+               memcpy(&pDest[i], pTemp, *iDiffCount);
+               pTemp += *iDiffCount;
+               i += *iDiffCount;
+               *iDiffCount = *iSkipCount = 0;
+            }
          }
          else // short diff, long skip
          {
 #ifdef DEBUG_LOG
-printf("copy/skip %d,0\n", *iDiffCount);
+printf("copy+skip %d,0,", *iDiffCount);
+DumpHex(pTemp, *iDiffCount);
 #endif
-            pDest[i++] = 0x40 | (*iDiffCount << 3);
-            memcpy(&pDest[i], pTemp, *iDiffCount);
+            if (CheckShortRepeat(pTemp, *iDiffCount))
+            {
+               pDest[i++] = OP_REPEAT + (*iDiffCount-1);
+               pDest[i++] = pTemp[0];
+            }
+            else
+            {
+               pDest[i++] = OP_COPYSKIP | (*iDiffCount << 3);
+               memcpy(&pDest[i], pTemp, *iDiffCount);
+               i += *iDiffCount;
+            }
             pTemp += *iDiffCount;
-            i += *iDiffCount;
             *iDiffCount = 0;
             while (*iSkipCount >= 256)
             {
 #ifdef DEBUG_LOG
 printf("big skip 256\n");
 #endif
-               pDest[i++] = 0x00;
+               pDest[i++] = OP_SKIPCOPY;
                pDest[i++] = 0xff; // skip 256
                *iSkipCount -= 256;
             } // while skip >= 256
@@ -478,7 +595,7 @@ printf("big skip 256\n");
 #ifdef DEBUG_LOG
 printf("big skip %d\n", *iSkipCount);
 #endif
-               pDest[i++] = 0x00;
+               pDest[i++] = OP_SKIPCOPY;
                pDest[i++] = *iSkipCount - 1;
                *iSkipCount = 0;
             }
@@ -491,7 +608,7 @@ printf("big skip %d\n", *iSkipCount);
 #ifdef DEBUG_LOG
 printf("big skip final 256\n");
 #endif
-               pDest[i++] = 0x00;
+               pDest[i++] = OP_SKIPCOPY;
                pDest[i++] = 0xff; // skip 256
                *iSkipCount -= 256;
             } // while skip >= 256
@@ -500,7 +617,7 @@ printf("big skip final 256\n");
 #ifdef DEBUG_LOG
 printf("big skip final %d\n", *iSkipCount);
 #endif
-               pDest[i++] = 0x00;
+               pDest[i++] = OP_SKIPCOPY;
                pDest[i++] = *iSkipCount - 1;
                *iSkipCount = 0;
             }
@@ -653,8 +770,8 @@ unsigned char ucBMP[1024]; // for generating output BMP
       bCode = pData[iOff++];
       switch (bCode & 0xc0) // different compression types
       {
-         case 0x00: // skip/copy
-            if (bCode == 0) // big skip
+         case OP_SKIPCOPY: // skip/copy
+            if (bCode == OP_SKIPCOPY) // big skip
             {
                b = pData[iOff++];
                i += b + 1;
@@ -667,8 +784,8 @@ unsigned char ucBMP[1024]; // for generating output BMP
                i += bCode & 7;
             }
             break;
-         case 0x40: // copy/skip
-            if (bCode == 0x40) // big copy
+         case OP_COPYSKIP: // copy/skip
+            if (bCode == OP_COPYSKIP) // big copy
             {
                b = pData[iOff++];
                j = b + 1;
@@ -685,9 +802,15 @@ unsigned char ucBMP[1024]; // for generating output BMP
                i += (bCode & 7); // skip
             }
             break;
-         case 0x80: // repeat
-         case 0xc0:
-            j = (bCode & 0x7f) + 1;
+         case OP_REPEATSKIP:
+            j = ((bCode & 0x38) >> 3); // repeat
+            b = pData[iOff++];
+            memset(&ucScreen[i], b, j);
+            i += j;
+            i += (bCode & 7); // skip
+            break;
+         case OP_REPEAT:
+            j = (bCode & 0x3f) + 1;
             b = pData[iOff++];
             memset(&ucScreen[i], b, j);
             i += j;
@@ -800,6 +923,7 @@ unsigned char *pCompressed, *pPrevious;
 		pp2.cFlags = PIL_PAGEFLAGS_TOPDOWN;
 		pp2.cCompression = PIL_COMP_NONE;
 		pp2.pPalette = PILIOAlloc(2048);
+if (pf.iPageTotal > 200) pf.iPageTotal = 200;
 		for (i=0; i<pf.iPageTotal; i++)
 		{
 		PIL_PAGE ppSrc;
@@ -868,6 +992,11 @@ printf("About to enter AddFrame() for frame %d\n", i);
 		}
 		PILClose(&pf);
 	} // if file loaded successfully
+        else
+        {
+           printf("Error loading %s\n", szIn);
+           return -1;
+        }
    PlayBack(pCompressed, iLen);
    return 0;
 }

@@ -26,7 +26,8 @@
 // 00000000 - special case (long skip). The next byte is the len (1-256)
 // 01CCCSSS - copy+skip (in that order). Same as above
 // 01000000 - special case (long copy). The next byte is the len (1-256)
-// 1RRRRRRR - Repeat the next byte 1-128 times.
+// 10RRRSSS - repeat+skip
+// 11RRRRRR - Repeat the next byte 1-64 times.
 //
 // With those simple operations, typical animated GIF's get compressed between
 // 3 and 6 to 1 (each 1024 byte frame becomes 170 to 341 bytes of compressed
@@ -59,8 +60,8 @@
 #define OP_MASK 0xc0
 #define OP_SKIPCOPY 0x00
 #define OP_COPYSKIP 0x40
-#define OP_REPEAT1 0x80
-#define OP_REPEAT2 0xc0
+#define OP_REPEATSKIP 0x80
+#define OP_REPEAT 0xc0
 
 static int file_i2c = 0;
 static int iOffset;
@@ -304,9 +305,22 @@ do {
              }
            }
 	break;
-      case OP_REPEAT1: // repeat
-      case OP_REPEAT2:
-          j = (bCode & 0x7f) + 1;
+
+      case OP_REPEATSKIP: // repeat+skip
+          j = (bCode & 0x38) >> 3; // repeat count
+          b = *s++;
+          memset(ucTemp, b, j);
+          oledWriteDataBlock(ucTemp, j);
+          i += j;
+          if (bCode & 7)
+          {
+             i += (bCode & 7); // skip amount
+             oledSetPosition(i & 0x7f, (i >> 7));
+          }
+          break;
+
+      case OP_REPEAT:
+          j = (bCode & 0x3f) + 1;
           b = *s++;
 	  memset(ucTemp, b, j);
           oledWriteDataBlock(ucTemp, j);
